@@ -1,0 +1,70 @@
+name: PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  models: read
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    name: AI PR Review
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Get PR diff
+        id: pr-diff
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          # Limit diff size to avoid exceeding the model's context window
+          DIFF=$(git diff origin/${{ github.base_ref }}...HEAD -- . ':(exclude).github/' | head -c 20000)
+          echo "diff<<EOF" >> $GITHUB_OUTPUT
+          echo "$DIFF" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Review PR with AI
+        id: ai-response
+        uses: actions/ai-inference@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          max-tokens: 2000
+          system-prompt: |
+            You are a helpful code reviewer. Review the provided pull request diff and give concise, constructive feedback.
+
+            Focus on:
+            - Correctness and potential bugs
+            - Code quality and readability
+            - Missing edge cases or error handling
+            - Security concerns
+
+            Always respond with ready-to-use markdown content (no code blocks wrapping your entire response) that can be posted directly as a pull request comment.
+
+            End your review with a clear recommendation: ✅ Approved, ⚠️ Needs minor changes, or ❌ Needs major changes.
+
+            Sign off as AI Reviewer.
+          prompt: |
+            Pull request opened by ${{ github.event.pull_request.user.login }}
+            Title: ${{ github.event.pull_request.title }}
+            Description:
+            ---
+            ${{ github.event.pull_request.body }}
+            ---
+            Diff:
+            ---
+            ${{ steps.pr-diff.outputs.diff }}
+            ---
+
+      - name: Post AI review comment
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body: ${{ steps.ai-response.outputs.response }}
